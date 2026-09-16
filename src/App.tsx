@@ -5,6 +5,7 @@ import { TimelinePage } from '@/pages/TimelinePage';
 import { RadicalEditorPage } from '@/pages/RadicalEditorPage';
 import { ComposerPage } from '@/pages/ComposerPage';
 import { LexiconPage } from '@/pages/LexiconPage';
+import { StrokeOrderPage } from '@/pages/StrokeOrderPage';
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
               <Route path="/" element={<Navigate to="/glyphs" replace />} />
               <Route path="/glyphs" element={<GlyphGridPage />} />
               <Route path="/timeline" element={<TimelinePage />} />
+              <Route path="/stroke-order" element={<StrokeOrderPage />} />
               <Route path="/editor/radical" element={<RadicalEditorPage />} />
               <Route path="/composer" element={<ComposerPage />} />
               <Route path="/lexicon" element={<LexiconPage />} />

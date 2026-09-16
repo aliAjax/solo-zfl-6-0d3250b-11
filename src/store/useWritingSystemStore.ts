@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { WritingSystemStore, Radical, Lexeme, CompositionLayout } from '@/types';
+import type { WritingSystemStore, Radical, Lexeme, CompositionLayout, StrokeOrderMap } from '@/types';
 import { generateId } from '@/utils/glyphUtils';
 import { MOCK_STAGES, MOCK_RADICALS, MOCK_LEXEMES } from '@/utils/mockData';
+import { parseStrokeSet, isValidOrderPermutation, reviewFingerprint } from '@/utils/strokeOrder';
+import { strokeOrderKey, shapePathForRef } from '@/utils/strokeOrderReview';
 
 const STORAGE_KEY = 'fictional-writing-system-v1';
 
@@ -10,6 +12,7 @@ const getInitialState = () => ({
   stages: MOCK_STAGES,
   radicals: MOCK_RADICALS,
   lexemes: MOCK_LEXEMES,
+  strokeOrders: {} as StrokeOrderMap,
   selectedRadicalId: null as string | null,
   selectedStageId: MOCK_STAGES[MOCK_STAGES.length - 1]?.id || null,
   composingRadicalIds: [] as string[],
@@ -32,14 +35,22 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
         })),
 
       removeStage: (id) =>
-        set((state) => ({
-          stages: state.stages.filter((st) => st.id !== id),
-          radicals: state.radicals.map((r) => ({
-            ...r,
-            variants: r.variants.filter((v) => v.stageId !== id),
-          })),
-          selectedStageId: state.selectedStageId === id ? null : state.selectedStageId,
-        })),
+        set((state) => {
+          const strokeOrders = Object.fromEntries(
+            Object.entries(state.strokeOrders).filter(
+              ([key]) => key.slice(key.indexOf(':') + 1) !== id
+            )
+          );
+          return {
+            stages: state.stages.filter((st) => st.id !== id),
+            radicals: state.radicals.map((r) => ({
+              ...r,
+              variants: r.variants.filter((v) => v.stageId !== id),
+            })),
+            strokeOrders,
+            selectedStageId: state.selectedStageId === id ? null : state.selectedStageId,
+          };
+        }),
 
       addRadical: (r) => {
         const id = generateId();
@@ -70,6 +81,9 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
             ...l,
             radicalIds: l.radicalIds.filter((rid) => rid !== id),
           })),
+          strokeOrders: Object.fromEntries(
+            Object.entries(state.strokeOrders).filter(([key]) => !key.startsWith(`${id}:`))
+          ),
           selectedRadicalId: state.selectedRadicalId === id ? null : state.selectedRadicalId,
           composingRadicalIds: state.composingRadicalIds.filter((rid) => rid !== id),
         })),
@@ -124,6 +138,33 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
 
       setComposingLayout: (layout) => set({ composingLayout: layout }),
 
+      saveStrokeOrder: (radicalId, stageId, order, fingerprint) => {
+        const state = get();
+        const radical = state.radicals.find((r) => r.id === radicalId);
+        if (!radical) return;
+        // 以当前真实形状重新解析、校验：只接受笔画数一致的合法排列，
+        // 指纹必须与当前形状相符 —— 形状、笔画数、闭合状态都不会被此操作改变。
+        const parsed = parseStrokeSet(shapePathForRef(radical, stageId));
+        if (parsed.isEmpty || !isValidOrderPermutation(order, parsed.strokes.length)) return;
+        if (fingerprint !== reviewFingerprint(parsed)) return;
+        const key = strokeOrderKey(radicalId, stageId);
+        set((s) => ({
+          strokeOrders: {
+            ...s.strokeOrders,
+            [key]: { order: [...order], fingerprint, savedAt: Date.now() },
+          },
+        }));
+      },
+
+      clearStrokeOrder: (radicalId, stageId) =>
+        set((state) => {
+          const key = strokeOrderKey(radicalId, stageId);
+          if (!(key in state.strokeOrders)) return state;
+          const strokeOrders = { ...state.strokeOrders };
+          delete strokeOrders[key];
+          return { strokeOrders };
+        }),
+
       exportData: () => {
         const state = get();
         return JSON.stringify(
@@ -131,6 +172,7 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
             stages: state.stages,
             radicals: state.radicals,
             lexemes: state.lexemes,
+            strokeOrders: state.strokeOrders,
             exportedAt: new Date().toISOString(),
           },
           null,
@@ -148,6 +190,7 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
             stages: parsed.stages,
             radicals: parsed.radicals,
             lexemes: parsed.lexemes,
+            strokeOrders: sanitizeStrokeOrders(parsed.strokeOrders),
             selectedRadicalId: null,
             selectedStageId: parsed.stages[parsed.stages.length - 1]?.id || null,
             composingRadicalIds: [],
@@ -166,7 +209,17 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
         stages: state.stages,
         radicals: state.radicals,
         lexemes: state.lexemes,
+        strokeOrders: state.strokeOrders,
       }),
+      // 兼容旧存档：没有 strokeOrders 字段时补空表
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<WritingSystemStore>;
+        return {
+          ...current,
+          ...p,
+          strokeOrders: sanitizeStrokeOrders(p.strokeOrders),
+        };
+      },
       onRehydrateStorage: () => (state) => {
         if (state) {
           if (!state.selectedStageId && state.stages.length > 0) {
@@ -177,3 +230,24 @@ export const useWritingSystemStore = create<WritingSystemStore>()(
     }
   )
 );
+
+function sanitizeStrokeOrders(raw: unknown): StrokeOrderMap {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: StrokeOrderMap = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const v = value as { order?: unknown; fingerprint?: unknown; savedAt?: unknown };
+    if (
+      typeof key === 'string' &&
+      Array.isArray(v?.order) &&
+      v.order.every((n) => Number.isInteger(n) as boolean) &&
+      typeof v.fingerprint === 'string'
+    ) {
+      out[key] = {
+        order: v.order as number[],
+        fingerprint: v.fingerprint,
+        savedAt: typeof v.savedAt === 'number' ? v.savedAt : 0,
+      };
+    }
+  }
+  return out;
+}

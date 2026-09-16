@@ -40,10 +40,26 @@ export interface Lexeme {
   createdAt: number;
 }
 
+/**
+ * 某字根在某阶段（或基础形状）的手工笔顺覆盖。
+ * order 是 0..n-1 的一个排列，元素是笔画在原始路径中的子路径序号
+ * （sourceIndex）——只能重排，不能增删笔画或改变形状。
+ */
+export interface StrokeOrderOverride {
+  order: number[];
+  /** 保存时的复核指纹（规则版本 + 形状指纹） */
+  fingerprint: string;
+  savedAt: number;
+}
+
+/** 笔顺覆盖表：键为 `${radicalId}:${stageId | BASE_SHAPE_KEY}` */
+export type StrokeOrderMap = Record<string, StrokeOrderOverride>;
+
 export interface WritingSystemState {
   stages: HistoricalStage[];
   radicals: Radical[];
   lexemes: Lexeme[];
+  strokeOrders: StrokeOrderMap;
   selectedRadicalId: string | null;
   selectedStageId: string | null;
   composingRadicalIds: string[];
@@ -71,6 +87,11 @@ export interface WritingSystemActions {
   clearComposer: () => void;
   moveInComposer: (fromIndex: number, toIndex: number) => void;
   setComposingLayout: (layout: CompositionLayout) => void;
+
+  /** 保存某字根某阶段的手工笔顺（仅接受合法排列）。 */
+  saveStrokeOrder: (radicalId: string, stageId: string | null, order: number[], fingerprint: string) => void;
+  /** 清除手工顺序，回到规则顺序。 */
+  clearStrokeOrder: (radicalId: string, stageId: string | null) => void;
 
   exportData: () => string;
   importData: (json: string) => void;
